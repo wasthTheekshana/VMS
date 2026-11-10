@@ -1,9 +1,12 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { Role } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { COOKIE_NAME } from '../common/guards';
+import { isSessionCurrent, SessionClaims } from '../auth/session';
+import { loadEnv } from '../config/env';
 
 export const rooms = {
   user: (id: string) => `user:${id}`,
@@ -11,6 +14,15 @@ export const rooms = {
   dept: (id: string) => `dept:${id}`,
   admins: 'admins',
 };
+
+/** The rooms a user may be in, derived only from their CURRENT record (never from what they asked for). */
+export function roomsFor(u: { id: string; role: Role; guardRoomId: string | null; departmentId: string | null }): string[] {
+  const r = [rooms.user(u.id)];
+  if (u.role === 'super_admin') r.push(rooms.admins);
+  if (u.role === 'guard' && u.guardRoomId) r.push(rooms.guardRoom(u.guardRoomId));
+  if (u.role === 'dept_admin' && u.departmentId) r.push(rooms.dept(u.departmentId));
+  return r.sort();
+}
 
 function readCookie(header: string | undefined, name: string): string | undefined {
   for (const part of (header ?? '').split(';')) {
@@ -23,6 +35,7 @@ function readCookie(header: string | undefined, name: string): string | undefine
 /**
  * Real-time channel (NFR-2). A socket is authenticated from the same HttpOnly session cookie and may only join
  * rooms derived server-side from its user record, so a guard can never receive another guard room's events (FR-17).
+ * The connection is dropped the moment its session is revoked or its rooms would change, and re-checked every minute.
  */
 @Injectable()
 @WebSocketGateway({
@@ -32,6 +45,7 @@ function readCookie(header: string | undefined, name: string): string | undefine
 export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, OnModuleDestroy {
   @WebSocketServer() server: Server;
   private readonly log = new Logger('Realtime');
+  private readonly maxHours = loadEnv().sessionMaxHours;
   private sweeper?: NodeJS.Timeout;
 
   constructor(private readonly jwt: JwtService, private readonly prisma: PrismaService) {}
@@ -48,30 +62,45 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
     try {
       const token = readCookie(socket.handshake.headers.cookie, COOKIE_NAME);
       if (!token) throw new Error('no session');
-      const claims = await this.jwt.verifyAsync<{ sub: string; exp: number }>(token);
+      const claims = await this.jwt.verifyAsync<SessionClaims>(token);
       const u = await this.prisma.user.findUnique({ where: { id: claims.sub } });
-      if (!u?.isActive) throw new Error('inactive');
-      socket.data.userId = u.id;
-      socket.data.exp = claims.exp;
-      const joins = [rooms.user(u.id)];
-      if (u.role === 'super_admin') joins.push(rooms.admins);
-      if (u.role === 'guard' && u.guardRoomId) joins.push(rooms.guardRoom(u.guardRoomId));
-      if (u.role === 'dept_admin' && u.departmentId) joins.push(rooms.dept(u.departmentId));
+      if (!u?.isActive || !isSessionCurrent(claims, u, this.maxHours)) throw new Error('session revoked or expired');
+      const joins = roomsFor(u);
+      socket.data = { userId: u.id, exp: claims.exp, tv: claims.tv, at: claims.at, rooms: joins.join(',') };
       await socket.join(joins);
     } catch {
       socket.disconnect(true); // unauthenticated sockets get nothing
     }
   }
 
-  /** Drop sockets whose session expired or whose user was deactivated. */
+  /** End every live connection of a user at once (logout, password change/reset, deactivation, reassignment). */
+  disconnectUser(userId: string) {
+    this.server?.in(rooms.user(userId)).disconnectSockets(true);
+  }
+
+  /**
+   * Safety net behind the immediate disconnects: drop sockets whose session expired or was revoked, whose user was
+   * deactivated, or whose room set no longer matches the user's CURRENT role / guard room / department.
+   */
   private async sweep() {
     const sockets = await this.server.fetchSockets();
-    const now = Date.now() / 1000;
+    if (!sockets.length) return;
+    const nowSec = Date.now() / 1000;
     const ids = [...new Set(sockets.map((s) => s.data.userId as string))];
-    const active = new Set(
-      (await this.prisma.user.findMany({ where: { id: { in: ids }, isActive: true }, select: { id: true } })).map((u) => u.id),
+    const users = new Map(
+      (await this.prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, isActive: true, tokenVersion: true, role: true, guardRoomId: true, departmentId: true },
+      })).map((u) => [u.id, u]),
     );
-    for (const s of sockets) if (s.data.exp < now || !active.has(s.data.userId)) s.disconnect(true);
+    for (const s of sockets) {
+      const u = users.get(s.data.userId);
+      const stale =
+        !u || !u.isActive || s.data.exp < nowSec ||
+        !isSessionCurrent({ tv: s.data.tv, at: s.data.at }, u, this.maxHours, nowSec) ||
+        roomsFor(u).join(',') !== s.data.rooms;
+      if (stale) s.disconnect(true);
+    }
   }
 
   emit(targets: string[], event: string, payload: unknown) {

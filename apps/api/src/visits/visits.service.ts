@@ -12,7 +12,7 @@ import { visitScope } from '../common/scope';
 import {
   CheckInDto, CheckOutDto, PreRegisterDto, UpdatePreRegistrationDto, WalkInDto,
 } from './visits.dto';
-import { colomboDayBounds, isValidNic, newReferenceNo, toView, VisitRecord } from './visit-rules';
+import { colomboDayBounds, isValidNic, newReferenceNo, toHostView, toView, VisitRecord } from './visit-rules';
 
 /** Explicit selects: the NIC hash and any ciphertext must never be serialised to clients. */
 export const INCLUDE = {
@@ -37,6 +37,10 @@ export class VisitsService {
   ) {}
 
   private view = (v: VisitRecord, full = false) => toView(v, this.crypto, full);
+  /** Hosts and department admins only ever see what is recorded on the visit itself, never the shared visitor record. */
+  private hostView = (v: VisitRecord, full = false) => toHostView(v, this.crypto, full);
+  /** Audit entries carry ids and statuses only: strip the visitor and the per-visit copies of name/phone/company. */
+  private auditable = <T extends object>(v: T) => ({ ...v, visitor: undefined, visitorName: undefined, visitorPhone: undefined, visitorCompany: undefined });
 
   // ---------- shared helpers ----------
 
@@ -60,13 +64,14 @@ export class VisitsService {
         },
       });
     }
+    // A host pre-registering a NIC that is already on file must not touch the shared record: it holds data other
+    // hosts and guards entered. Their typed details live on the visit itself (see visitorName/Phone/Company).
+    if (!overwrite) return existing;
     const data: Prisma.VisitorUpdateInput = {};
     if (v.phone) data.phone = v.phone;
     if (v.company) data.company = v.company;
-    if (overwrite) {
-      if (v.fullName) data.fullName = v.fullName;
-      if (v.address) data.address = v.address;
-    }
+    if (v.fullName) data.fullName = v.fullName;
+    if (v.address) data.address = v.address;
     return Object.keys(data).length ? tx.visitor.update({ where: { id: existing.id }, data }) : existing;
   }
 
@@ -113,13 +118,14 @@ export class VisitsService {
           visitorId: visitor.id, groupId: group?.id, hostUserId: actor.id, departmentId: actor.departmentId,
           guardRoomId: dto.guardRoomId, purpose: dto.purpose, areaVisited: dto.areaVisited,
           expectedAt: dto.expectedAt, status: 'expected', source: 'pre_registered', createdBy: actor.id,
+          visitorName: input.fullName, visitorPhone: input.phone, visitorCompany: input.company, // the host's own entries
         }));
       }
       return out;
     });
 
     for (const v of visits) {
-      await this.audit.record({ userId: actor.id, action: 'pre_register', entity: 'visit', entityId: v.id, after: { ...v, visitor: undefined } });
+      await this.audit.record({ userId: actor.id, action: 'pre_register', entity: 'visit', entityId: v.id, after: this.auditable(v) });
     }
     // UC-2: warn (do not block) when a pre-registered visitor is blacklisted.
     const listed = await this.prisma.blacklist.findMany({ where: { nicHash: { in: nics } }, select: { nicHash: true } });
@@ -129,7 +135,7 @@ export class VisitsService {
       if (flagged.has(nics[i])) await this.notifier.visitEvent('blacklist_hit', visits[i].id);
     }
     return {
-      visits: visits.map((v, i) => ({ ...this.view(v), blacklisted: flagged.has(nics[i]) })),
+      visits: visits.map((v, i) => ({ ...this.hostView(v), blacklisted: flagged.has(nics[i]) })),
     };
   }
 
@@ -137,11 +143,13 @@ export class VisitsService {
     const rows = await this.prisma.visit.findMany({
       where: visitScope(actor), include: INCLUDE, orderBy: { createdAt: 'desc' }, take: LIST_LIMIT,
     });
-    return rows.map((v) => this.view(v));
+    return rows.map((v) => this.hostView(v));
   }
 
+  /** Guards verify identity from the shared record; hosts and department admins only see this visit's own details. */
   async getOne(actor: AuthUser, id: string) {
-    return this.view(await this.findScoped(actor, id), true);
+    const v = await this.findScoped(actor, id);
+    return actor.role === 'guard' ? this.view(v, true) : this.hostView(v, true);
   }
 
   async updatePreRegistration(actor: AuthUser, id: string, dto: UpdatePreRegistrationDto) {
@@ -156,14 +164,14 @@ export class VisitsService {
     const after = await this.findScoped(actor, id);
     await this.audit.record({
       userId: actor.id, action: 'update', entity: 'visit', entityId: id,
-      before: { ...before, visitor: undefined }, after: { ...after, visitor: undefined },
+      before: this.auditable(before), after: this.auditable(after),
     });
     const roomChanged = after.guardRoom.id !== before.guardRoom.id;
     const timeChanged = (after.expectedAt?.getTime() ?? 0) !== (before.expectedAt?.getTime() ?? 0);
     await this.notifier.visitEvent('pre_registration_updated', id, {
       previousGuardRoomId: roomChanged ? before.guardRoom.id : undefined, notifyVisitor: roomChanged || timeChanged,
     });
-    return this.view(after);
+    return this.hostView(after);
   }
 
   async cancel(actor: AuthUser, id: string) {
@@ -173,7 +181,7 @@ export class VisitsService {
     if (!count) throw new ConflictException('Visit changed; reload and retry');
     await this.audit.record({ userId: actor.id, action: 'cancel', entity: 'visit', entityId: id, before: { status: before.status }, after: { status: 'cancelled' } });
     await this.notifier.visitEvent('pre_registration_cancelled', id);
-    return this.view(await this.findScoped(actor, id));
+    return this.hostView(await this.findScoped(actor, id));
   }
 
   // ---------- Guard console (FR-10 to FR-16, FR-17) ----------
@@ -258,6 +266,8 @@ export class VisitsService {
         where: { id, status: 'expected' }, // atomic: a double tap cannot check in twice
         data: {
           status: 'on_premises', timeIn: new Date(), visitorId: visitor.id, passCategoryId: dto.passCategoryId,
+          // the guard-verified details become this visit's own record (what its host will see)
+          visitorName: visitor.fullName, visitorPhone: visitor.phone, visitorCompany: visitor.company,
           ...(dto.areaVisited && { areaVisited: dto.areaVisited }), ...(dto.remarks && { remarks: dto.remarks }),
         },
       });
@@ -298,9 +308,10 @@ export class VisitsService {
         visitorId: visitor.id, hostUserId: dto.hostUserId, departmentId: dto.hostDepartmentId, guardRoomId: actor.guardRoomId!,
         passCategoryId: dto.passCategoryId, purpose: dto.purpose, areaVisited: dto.areaVisited, remarks: dto.remarks,
         status: 'on_premises', source: 'walk_in', timeIn: new Date(), createdBy: actor.id,
+        visitorName: visitor.fullName, visitorPhone: visitor.phone, visitorCompany: visitor.company,
       });
     });
-    await this.audit.record({ userId: actor.id, action: 'walk_in', entity: 'visit', entityId: visit.id, after: { ...visit, visitor: undefined } });
+    await this.audit.record({ userId: actor.id, action: 'walk_in', entity: 'visit', entityId: visit.id, after: this.auditable(visit) });
     await this.notifier.visitEvent('walk_in', visit.id);
     return this.view(visit, true);
   }

@@ -74,24 +74,24 @@ async function main() {
   const now = Date.now();
   const colombo0 = (daysAgo: number) => { const l = new Date(now + 5.5 * 3600_000 - daysAgo * D); return Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate()) - 5.5 * 3600_000; };
   let n = 0, refSeq = 0;
-  const visitorCache = new Map<number, string>();
+  const visitorCache = new Map<number, { id: string; fullName: string; phone: string | null; company: string | null }>();
 
   const make = async (dayStart: number, hourF: number, status: 'checked_out' | 'on_premises' | 'expected', source: 'pre_registered' | 'walk_in') => {
     const idx = n++ % 380;
-    let vid = visitorCache.get(idx);
-    if (!vid) {
+    let vis = visitorCache.get(idx);
+    if (!vis) {
       const nic = nicFor(idx);
       const v = await prisma.visitor.create({ data: {
         fullName: `${pick(FIRST)} ${pick(LAST)}`, nicHash: crypto.hashNic(nic), nicOrLicence: crypto.encrypt(nic), company: pick(COMPANIES),
         phone: `07${Math.floor(10000000 + rnd() * 89999999)}`, address: 'Colombo',
       } });
-      vid = v.id; visitorCache.set(idx, vid);
+      vis = v; visitorCache.set(idx, vis);
     }
     const guard = pick(guards); const host = pick(hosts);
     const at = new Date(dayStart + hourF * 3600_000);
     const stayH = 0.4 + rnd() * 3.2;
     await prisma.visit.create({ data: {
-      referenceNo: `V-DEMO-${String(++refSeq).padStart(5, '0')}`, visitorId: vid, hostUserId: host.id, departmentId: host.departmentId, guardRoomId: guard.roomId,
+      referenceNo: `V-DEMO-${String(++refSeq).padStart(5, '0')}`, visitorId: vis.id, visitorName: vis.fullName, visitorPhone: vis.phone, visitorCompany: vis.company, hostUserId: host.id, departmentId: host.departmentId, guardRoomId: guard.roomId,
       passCategoryId: status === 'expected' ? null : pick(passes).id, purpose: weighted(PURPOSES), areaVisited: pick(AREAS), source, status,
       expectedAt: source === 'pre_registered' ? new Date(at.getTime() - 20 * 60_000) : null,
       timeIn: status === 'expected' ? null : at, timeOut: status === 'checked_out' ? new Date(at.getTime() + stayH * 3600_000) : null,

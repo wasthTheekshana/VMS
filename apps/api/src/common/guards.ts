@@ -2,6 +2,8 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable, Unauthor
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { Role } from '@prisma/client';
+import { isSessionCurrent, SessionClaims } from '../auth/session';
+import { loadEnv } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { IS_PUBLIC, ROLES } from './decorators';
 
@@ -10,6 +12,8 @@ export const COOKIE_NAME = 'vms_session';
 /** Global: every route requires a valid session unless marked @Public(). */
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly maxHours = loadEnv().sessionMaxHours;
+
   constructor(
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
@@ -21,15 +25,15 @@ export class AuthGuard implements CanActivate {
     const req = ctx.switchToHttp().getRequest();
     const token: string | undefined = req.cookies?.[COOKIE_NAME];
     if (!token) throw new UnauthorizedException();
-    let sub: string;
+    let claims: SessionClaims;
     try {
-      sub = (await this.jwt.verifyAsync<{ sub: string }>(token)).sub;
+      claims = await this.jwt.verifyAsync<SessionClaims>(token);
     } catch {
       throw new UnauthorizedException();
     }
-    // Re-read from DB so deactivation / role changes take effect immediately.
-    const u = await this.prisma.user.findUnique({ where: { id: sub } });
-    if (!u || !u.isActive) throw new UnauthorizedException();
+    // Re-read from DB so deactivation / role changes / logout / password changes take effect immediately.
+    const u = await this.prisma.user.findUnique({ where: { id: claims.sub } });
+    if (!u || !u.isActive || !isSessionCurrent(claims, u, this.maxHours)) throw new UnauthorizedException();
     req.user = { id: u.id, name: u.name, role: u.role, departmentId: u.departmentId, guardRoomId: u.guardRoomId };
     return true;
   }

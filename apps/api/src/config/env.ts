@@ -4,6 +4,8 @@ export interface Env {
   jwtExpiresIn: string;
   webOrigin: string;
   cookieSecure: boolean;
+  /** Absolute session lifetime in hours. Activity extends the idle window (jwtExpiresIn) but never this. */
+  sessionMaxHours: number;
 }
 
 /** Fail fast at boot if a security-critical setting is missing or weak. */
@@ -17,7 +19,12 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     throw new Error('DATA_ENCRYPTION_KEY must be 32 bytes, base64 encoded');
   }
   if ((source.NIC_HASH_KEY ?? '').length < 32) throw new Error('NIC_HASH_KEY must be at least 32 characters');
+  const sessionMaxHours = Number(source.SESSION_MAX_HOURS ?? 12);
+  if (!Number.isFinite(sessionMaxHours) || sessionMaxHours < 1 || sessionMaxHours > 72) {
+    throw new Error('SESSION_MAX_HOURS must be a number between 1 and 72');
+  }
   return {
+    sessionMaxHours,
     port: Number(source.PORT ?? 4000),
     jwtSecret,
     jwtExpiresIn: source.JWT_EXPIRES_IN ?? '30m',

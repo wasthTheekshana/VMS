@@ -12,6 +12,7 @@ import { CurrentUser, Roles } from '../common/decorators';
 import { AuthUser } from '../common/auth.types';
 import { mapPrismaError } from '../common/prisma-errors';
 import { BCRYPT_COST } from '../auth/auth.service';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { assertCanManage, assertStrongPassword, assertValidAssignment } from './user-rules';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
@@ -47,7 +48,11 @@ export class UpdateUserDto {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly gateway: NotificationsGateway,
+  ) {}
 
   list(actor: AuthUser, role?: Role) {
     const where =
@@ -98,8 +103,13 @@ export class UsersService {
     if (password !== undefined) {
       assertStrongPassword(password);
       data.passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+      data.tokenVersion = { increment: 1 }; // a reset ends every existing session of that user
     }
     const after = await this.prisma.user.update({ where: { id }, data, select: PUBLIC_USER });
+    // Live connections must not outlive a reset, a deactivation or a move to another guard room.
+    if (password !== undefined || dto.isActive === false || after.guardRoomId !== before.guardRoomId) {
+      this.gateway.disconnectUser(id);
+    }
     await this.audit.record({
       userId: actor.id, action: password ? 'update_password' : 'update', entity: 'user', entityId: id, before, after,
     });

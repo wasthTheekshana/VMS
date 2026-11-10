@@ -67,6 +67,8 @@ model User {
   departmentId String?     @map("department_id") @db.Uuid
   guardRoomId  String?     @map("guard_room_id") @db.Uuid
   isActive     Boolean     @default(true) @map("is_active")
+  /// Bumped on logout / password change / reset: every token carrying an older number stops working immediately.
+  tokenVersion Int         @default(0) @map("token_version")
   createdAt    DateTime    @default(now()) @map("created_at")
   department   Department? @relation(fields: [departmentId], references: [id])
   guardRoom    GuardRoom?  @relation(fields: [guardRoomId], references: [id])
@@ -131,6 +133,10 @@ model Visit {
   status         VisitStatus @default(expected)
   source         VisitSource
   remarks        String?
+  /// What the host typed (or the guard verified) for THIS visit. Host views read these, never the shared visitor record.
+  visitorName    String?     @map("visitor_name")
+  visitorPhone   String?     @map("visitor_phone")
+  visitorCompany String?     @map("visitor_company")
   createdBy      String      @map("created_by") @db.Uuid
   checkedOutBy   String?     @map("checked_out_by") @db.Uuid
   createdAt      DateTime    @default(now()) @map("created_at")

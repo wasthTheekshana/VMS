@@ -94,7 +94,8 @@ export class RecordsService {
     };
     await this.audit.record({
       userId: actor.id, action: 'export', entity: 'visit',
-      after: { format: q.format, rowCount: rows.length, filters: { ...q, format: undefined } },
+      // The search box may hold a full NIC and the audit log is append-only: record THAT a search was used, never what it said.
+      after: { format: q.format, rowCount: rows.length, filters: { ...q, format: undefined, q: q.q ? '[redacted]' : undefined } },
     });
     return this.pack('visitor-records', q.format, 'Visitor records', `Generated ${formatColombo(new Date())} · ${rows.length} rows`, [sheet]);
   }

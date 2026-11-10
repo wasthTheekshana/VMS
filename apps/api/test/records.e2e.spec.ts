@@ -194,6 +194,13 @@ describe('Admin records, dashboard and exports (e2e)', () => {
       expect((await http().get('/api/records/export?format=csv').set(as('admin'))).status).toBe(400);
       expect((await http().get('/api/records/export').set(as('admin'))).status).toBe(400);
     });
+    it('never writes the search text, which can be a full NIC, into the append-only audit log', async () => {
+      await binary(http().get('/api/records/export').query({ format: 'xlsx', q: nic(1) }).set(as('admin')));
+      const row = await prisma.auditLog.findFirstOrThrow({ where: { action: 'export', entity: 'visit', userId: ids.admin }, orderBy: { createdAt: 'desc' } });
+      const written = JSON.stringify(row.afterJson);
+      expect(written).not.toContain(nic(1));
+      expect(written).toContain('[redacted]'); // the fact that a search was used is kept
+    });
     it('audits who exported what', async () => {
       const rows = await prisma.auditLog.findMany({ where: { action: 'export', entity: 'visit', userId: ids.admin } });
       expect(rows.length).toBeGreaterThanOrEqual(2);

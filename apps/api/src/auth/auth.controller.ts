@@ -1,8 +1,8 @@
-import { Body, Controller, Get, HttpCode, Module, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Module, Post, Req, Res } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { Throttle } from '@nestjs/throttler';
 import { IsString, MaxLength, MinLength } from 'class-validator';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { CurrentUser, Public } from '../common/decorators';
 import { AuthUser } from '../common/auth.types';
@@ -45,25 +45,28 @@ export class AuthController {
     return { id: user.id, name: user.name, username: user.username, role: user.role, departmentId: user.departmentId, guardRoomId: user.guardRoomId };
   }
 
+  /** Public so an expired session can still clear its cookie; a valid one is also revoked server-side. */
   @Public()
   @Post('logout')
   @HttpCode(204)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    await this.auth.logout(req.cookies?.[COOKIE_NAME]);
     res.clearCookie(COOKIE_NAME, { path: '/' });
   }
 
-  /** Sliding session: the web app calls this on activity to extend the idle window. */
+  /** Sliding idle window: the web app calls this on activity. It can never extend the absolute session limit. */
   @Post('refresh')
   @HttpCode(204)
-  async refresh(@CurrentUser() user: AuthUser, @Res({ passthrough: true }) res: Response) {
-    this.setCookie(res, await this.auth.refresh(user.id));
+  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    this.setCookie(res, await this.auth.refresh(req.cookies?.[COOKIE_NAME]));
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('change-password')
   @HttpCode(204)
-  async changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
-    await this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
+  async changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto, @Res({ passthrough: true }) res: Response) {
+    // Every other session of this user ends; this browser receives a fresh token and stays signed in.
+    this.setCookie(res, await this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword));
   }
 
   @Get('me')

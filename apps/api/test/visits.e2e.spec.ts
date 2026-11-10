@@ -63,7 +63,7 @@ describe('Visits: host portal + guard console (e2e)', () => {
   afterAll(async () => {
     const users = await prisma.user.findMany({ where: { email: { endsWith: `.${tag}@test.local` } }, select: { id: true } });
     const ids = users.map((u) => u.id);
-    const hashes = Array.from({ length: 12 }, (_, i) => crypto.hashNic(nic(i)));
+    const hashes = Array.from({ length: 20 }, (_, i) => crypto.hashNic(nic(i)));
     await prisma.notification.deleteMany({ where: { visit: { createdBy: { in: ids } } } });
     await prisma.visit.deleteMany({ where: { createdBy: { in: ids } } });
     await prisma.visitGroup.deleteMany({ where: { hostUserId: { in: ids } } });
@@ -109,6 +109,44 @@ describe('Visits: host portal + guard console (e2e)', () => {
       expect((await http().post('/api/visits').set(as('hostHR')).send(hostBody({ expectedAt: '2020-01-01T00:00:00Z' }))).status).toBe(400);
       expect((await http().post('/api/visits').set(as('hostHR')).send(hostBody({ guardRoomId: '00000000-0000-4000-8000-000000000000' }))).status).toBe(400);
       expect((await http().post('/api/visits').set(as('hostHR')).send(hostBody({ departmentId: hr }))).status).toBe(400); // unknown field
+    });
+    it("never lets a host read or change another host's visitor data (the shared visitor record)", async () => {
+      // hostHR registers the visitor; the guard verifies and records an address (this writes the shared record)
+      const first = await preReg({ visitors: [{ fullName: 'Real Name', nic: nic(15), phone: '0771111111', company: 'Real Co' }] });
+      await http().post(`/api/guard/visits/${first.id}/check-in`).set(as('guardA')).send({ passCategoryId: pass, address: '12 Real Road' }).expect(200);
+      await http().post(`/api/guard/visits/${first.id}/check-out`).set(as('guardA')).send({}).expect(200);
+
+      // hostIT now registers the SAME NIC with different details
+      const r = await http().post('/api/visits').set(as('hostIT')).send(hostBody({
+        visitors: [{ fullName: 'Typed By IT', nic: nic(15), phone: '0772222222', company: 'IT Co' }],
+      }));
+      expect(r.status).toBe(201);
+      const v = r.body.visits[0];
+      expect(v.visitor).toMatchObject({ fullName: 'Typed By IT', company: 'IT Co', address: null });
+      const leaked = /Real Name|Real Co|12 Real Road|0771111111/;
+      expect(JSON.stringify(r.body)).not.toMatch(leaked);
+
+      // the single-record view and the list show the same: only what hostIT typed
+      expect(JSON.stringify((await http().get(`/api/visits/${v.id}`).set(as('hostIT'))).body)).not.toMatch(leaked);
+      expect(JSON.stringify((await http().get('/api/visits/mine').set(as('hostIT'))).body)).not.toMatch(leaked);
+
+      // lists never carry an unmasked phone number at any level, for hosts or for guards
+      expect(JSON.stringify((await http().get('/api/visits/mine').set(as('hostIT'))).body)).not.toContain('0772222222');
+      expect(JSON.stringify((await http().get('/api/guard/expected').set(as('guardA'))).body)).not.toMatch(/0771111111|0772222222/);
+
+      // ...and the shared record was NOT modified by the host
+      const shared = await prisma.visitor.findUniqueOrThrow({ where: { nicHash: crypto.hashNic(nic(15)) } });
+      expect(shared).toMatchObject({ fullName: 'Real Name', company: 'Real Co', phone: '0771111111', address: '12 Real Road' });
+
+      // no visitor details end up in the append-only audit log either
+      const audit = await prisma.auditLog.findMany({ where: { entityId: { in: [first.id, v.id] } } });
+      expect(JSON.stringify(audit)).not.toMatch(/Real Name|Real Co|Typed By IT|IT Co|0771111111|0772222222/);
+    });
+    it('after check-in the host sees the guard-verified details of their OWN visit', async () => {
+      const v = await preReg({ visitors: [{ fullName: 'Typed Name', nic: nic(16), phone: '0773333333' }] });
+      await http().post(`/api/guard/visits/${v.id}/check-in`).set(as('guardA')).send({ passCategoryId: pass, fullName: 'Verified Name', company: 'Verified Co' }).expect(200);
+      const one = (await http().get(`/api/visits/${v.id}`).set(as('hostHR'))).body;
+      expect(one.visitor).toMatchObject({ fullName: 'Verified Name', company: 'Verified Co' });
     });
     it('only hosts pre-register; guards cannot', async () => {
       expect((await http().post('/api/visits').set(as('guardA')).send(hostBody())).status).toBe(403);
@@ -220,7 +258,7 @@ describe('Visits: host portal + guard console (e2e)', () => {
     it('"my visitors" only returns the host\'s own visits', async () => {
       const mine = await http().get('/api/visits/mine').set(as('hostIT'));
       expect(mine.status).toBe(200);
-      expect(mine.body).toHaveLength(0);
+      expect(mine.body.every((v: any) => v.host?.name === 'hostIT')).toBe(true); // only their own visits (an earlier test gave hostIT one)
     });
   });
 

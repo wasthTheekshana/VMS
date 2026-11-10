@@ -42,6 +42,8 @@ export interface VisitRecord {
   id: string; referenceNo: string; status: string; source: string; groupId: string | null;
   purpose: string | null; areaVisited: string | null; remarks: string | null;
   expectedAt: Date | null; timeIn: Date | null; timeOut: Date | null;
+  /** What was typed / verified for THIS visit. Host views are built from these, never from the shared visitor record. */
+  visitorName?: string | null; visitorPhone?: string | null; visitorCompany?: string | null;
   visitor: { id: string; fullName: string; nicOrLicence: string; phone: string | null; company: string | null; address: string | null };
   guardRoom: { id: string; name: string };
   passCategory: { id: string; name: string } | null;
@@ -53,11 +55,33 @@ export interface VisitRecord {
  * Shape a visit for the API. List views are masked; `full` (single-record view) reveals the
  * decrypted NIC / phone to roles already scoped to the record (NFR-4). The ciphertext never leaves the server.
  */
+/**
+ * What a HOST (or department admin) may see of a visit: only the details recorded on that visit itself.
+ * The shared visitor record can hold data entered by other hosts and guards (name, address, phone, company), so it
+ * is never read here; the NIC shown is the one that identifies the visit, masked unless this is a single-record view.
+ */
+export function toHostView(v: VisitRecord, crypto: PiiCrypto, full: boolean) {
+  const nic = crypto.decrypt(v.visitor.nicOrLicence);
+  // The raw per-visit copies are pulled out here so the unmasked phone never travels at the top level of a list row.
+  const { visitor: _shared, visitorName, visitorPhone, visitorCompany, ...visit } = v;
+  return {
+    ...visit,
+    visitor: {
+      fullName: visitorName ?? 'Visitor',
+      nic: full ? nic : PiiCrypto.mask(nic),
+      phone: full ? (visitorPhone ?? null) : maskPhone(visitorPhone),
+      company: visitorCompany ?? null,
+      address: null,
+    },
+  };
+}
+
 export function toView(v: VisitRecord, crypto: PiiCrypto, full: boolean) {
   const nic = crypto.decrypt(v.visitor.nicOrLicence);
   const { nicOrLicence: _omit, ...visitor } = v.visitor;
+  const { visitorName: _n, visitorPhone: _p, visitorCompany: _c, ...rest } = v; // raw per-visit copies stay server-side
   return {
-    ...v,
+    ...rest,
     visitor: { ...visitor, nic: full ? nic : PiiCrypto.mask(nic), phone: full ? v.visitor.phone : maskPhone(v.visitor.phone) },
   };
 }
