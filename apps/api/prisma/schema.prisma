@@ -1,0 +1,223 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  super_admin
+  dept_admin
+  host
+  guard
+}
+
+enum VisitStatus {
+  expected
+  on_premises
+  checked_out
+  cancelled
+}
+
+enum VisitSource {
+  pre_registered
+  walk_in
+}
+
+enum NotificationChannel {
+  in_app
+  sms
+  email
+}
+
+model Department {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  users     User[]
+  visits    Visit[]
+
+  @@map("departments")
+}
+
+model GuardRoom {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique
+  location    String
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  users       User[]
+  visits      Visit[]
+
+  @@map("guard_rooms")
+}
+
+model User {
+  id           String      @id @default(uuid()) @db.Uuid
+  name         String
+  username     String      @unique
+  email        String?     @unique
+  phone        String?
+  passwordHash String      @map("password_hash")
+  role         Role
+  departmentId String?     @map("department_id") @db.Uuid
+  guardRoomId  String?     @map("guard_room_id") @db.Uuid
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  department   Department? @relation(fields: [departmentId], references: [id])
+  guardRoom    GuardRoom?  @relation(fields: [guardRoomId], references: [id])
+  hostedVisits Visit[]     @relation("VisitHost")
+  createdVisits Visit[]    @relation("VisitCreator")
+  checkedOutVisits Visit[] @relation("VisitCheckedOutBy")
+  visitGroups  VisitGroup[]
+
+  @@map("users")
+}
+
+model PassCategory {
+  id        String  @id @default(uuid()) @db.Uuid
+  name      String  @unique
+  isActive  Boolean @default(true) @map("is_active")
+  visits    Visit[]
+
+  @@map("pass_categories")
+}
+
+model Visitor {
+  id            String   @id @default(uuid()) @db.Uuid
+  fullName      String   @map("full_name")
+  /// AES-256-GCM ciphertext of the NIC / licence number
+  nicOrLicence  String   @map("nic_or_licence")
+  /// HMAC-SHA256 of the normalised NIC, for lookup without decrypting
+  nicHash       String   @unique @map("nic_hash")
+  address       String?
+  phone         String?
+  company       String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  visits        Visit[]
+
+  @@map("visitors")
+}
+
+model VisitGroup {
+  id         String   @id @default(uuid()) @db.Uuid
+  hostUserId String   @map("host_user_id") @db.Uuid
+  purpose    String
+  createdAt  DateTime @default(now()) @map("created_at")
+  host       User     @relation(fields: [hostUserId], references: [id])
+  visits     Visit[]
+
+  @@map("visit_groups")
+}
+
+model Visit {
+  id             String      @id @default(uuid()) @db.Uuid
+  referenceNo    String      @unique @map("reference_no")
+  visitorId      String      @map("visitor_id") @db.Uuid
+  groupId        String?     @map("group_id") @db.Uuid
+  hostUserId     String?     @map("host_user_id") @db.Uuid
+  departmentId   String?     @map("department_id") @db.Uuid
+  guardRoomId    String      @map("guard_room_id") @db.Uuid
+  passCategoryId String?     @map("pass_category_id") @db.Uuid
+  purpose        String?
+  areaVisited    String?     @map("area_visited")
+  expectedAt     DateTime?   @map("expected_at")
+  timeIn         DateTime?   @map("time_in")
+  timeOut        DateTime?   @map("time_out")
+  status         VisitStatus @default(expected)
+  source         VisitSource
+  remarks        String?
+  createdBy      String      @map("created_by") @db.Uuid
+  checkedOutBy   String?     @map("checked_out_by") @db.Uuid
+  createdAt      DateTime    @default(now()) @map("created_at")
+  visitor        Visitor     @relation(fields: [visitorId], references: [id])
+  group          VisitGroup? @relation(fields: [groupId], references: [id])
+  host           User?       @relation("VisitHost", fields: [hostUserId], references: [id])
+  creator        User        @relation("VisitCreator", fields: [createdBy], references: [id])
+  checkedOutByUser User?     @relation("VisitCheckedOutBy", fields: [checkedOutBy], references: [id])
+  department     Department? @relation(fields: [departmentId], references: [id])
+  guardRoom      GuardRoom   @relation(fields: [guardRoomId], references: [id])
+  passCategory   PassCategory? @relation(fields: [passCategoryId], references: [id])
+  notifications  Notification[]
+
+  @@index([guardRoomId, status, expectedAt])
+  @@index([departmentId, timeIn])
+  @@index([passCategoryId, timeIn])
+  @@index([checkedOutBy, timeOut])
+  @@map("visits")
+}
+
+model Notification {
+  id              String              @id @default(uuid()) @db.Uuid
+  visitId         String              @map("visit_id") @db.Uuid
+  recipientUserId String?             @map("recipient_user_id") @db.Uuid
+  recipientPhone  String?             @map("recipient_phone")
+  channel         NotificationChannel
+  event           String
+  status          String              @default("pending")
+  attempts        Int                 @default(0)
+  /// { title, message, sound? } for in_app; { text } for sms; { to, subject, text } for email
+  payload         Json?
+  lastError       String?             @map("last_error")
+  readAt          DateTime?           @map("read_at")
+  sentAt          DateTime?           @map("sent_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  visit           Visit               @relation(fields: [visitId], references: [id])
+
+  @@index([recipientUserId, channel, createdAt])
+  @@index([status, channel])
+  @@index([visitId, event])
+
+  @@map("notifications")
+}
+
+model Blacklist {
+  id        String   @id @default(uuid()) @db.Uuid
+  nicHash   String   @unique @map("nic_hash")
+  /// e.g. 1995****5678, for the admin list; the real NIC is never stored in clear
+  nicMasked String   @default("") @map("nic_masked")
+  reason    String
+  addedBy   String   @map("added_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("blacklist")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  entity     String
+  entityId   String?  @map("entity_id")
+  beforeJson Json?    @map("before_json")
+  afterJson  Json?    @map("after_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+/// UC-4: a guard asks an administrator to let a blacklisted visitor in; approval is single-use.
+model BlacklistOverride {
+  id          String    @id @default(uuid()) @db.Uuid
+  nicHash     String    @map("nic_hash")
+  guardRoomId String    @map("guard_room_id") @db.Uuid
+  visitId     String?   @map("visit_id") @db.Uuid
+  remark      String
+  /// pending | approved | rejected | used
+  status      String    @default("pending")
+  requestedBy String    @map("requested_by") @db.Uuid
+  decidedBy   String?   @map("decided_by") @db.Uuid
+  decisionNote String?  @map("decision_note")
+  decidedAt   DateTime? @map("decided_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([status, createdAt])
+  @@index([nicHash, guardRoomId, status])
+  @@map("blacklist_overrides")
+}

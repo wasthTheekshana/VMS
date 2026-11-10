@@ -1,0 +1,170 @@
+# VMS production stack for the shared DOK Solutions server (domain: vms.testsys.shop).
+# Run every command from the stack folder (~/vms-stack), where this file and .env live.
+# DOK rules applied: expose (never ports), only vms-web and vms-api join shared-nginx, explicit container_name,
+# restart unless-stopped, cpu/memory/pids limits and no-new-privileges everywhere, healthchecks gate startup,
+# data bind-mounted on the data disk, secrets only in .env, non-root users in the Dockerfiles.
+#
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d vms-db vms-redis
+#   docker compose -f docker-compose.prod.yml run --rm vms-api npx prisma migrate deploy
+#   docker compose -f docker-compose.prod.yml run --rm -e SEED_ADMIN_USERNAME -e SEED_ADMIN_PASSWORD vms-api node dist-seed/seed.js   # first deploy only
+#   docker compose -f docker-compose.prod.yml up -d
+name: vms-prod
+
+services:
+  vms-db:
+    image: postgres:16-alpine
+    container_name: vms-db
+    restart: unless-stopped
+    expose:
+      - "5432"
+    environment:
+      POSTGRES_DB: vms
+      POSTGRES_USER: vms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Tuned for the 2G container limit: shared_buffers ~25%, effective_cache_size ~75%.
+    command: >
+      postgres -c shared_buffers=512MB
+               -c effective_cache_size=1536MB
+               -c work_mem=16MB
+               -c max_connections=100
+    volumes:
+      - ${DATA_ROOT:-/mnt/disks/data}/db/vms:/var/lib/postgresql/data
+    networks:
+      - vms-app-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 2G
+          pids: 200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vms -d vms"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vms-redis:
+    image: redis:7-alpine
+    container_name: vms-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - ${DATA_ROOT:-/mnt/disks/data}/db/vms-redis:/data
+    networks:
+      - vms-app-net
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+          pids: 100
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vms-api:
+    build: ./apps/api
+    container_name: vms-api
+    restart: unless-stopped
+    expose:
+      - "4000"
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      HOME: /tmp # the container filesystem is read-only; /tmp is a tmpfs (prisma writes small files there)
+      DATABASE_URL: postgresql://vms:${POSTGRES_PASSWORD}@vms-db:5432/vms
+      REDIS_URL: redis://:${REDIS_PASSWORD}@vms-redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30m}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?set DATA_ENCRYPTION_KEY in .env}
+      NIC_HASH_KEY: ${NIC_HASH_KEY:?set NIC_HASH_KEY in .env}
+      WEB_ORIGIN: https://${VMS_DOMAIN:-vms.testsys.shop}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY_HOPS: "1" # exactly one proxy (the shared nginx) sits in front
+      OVERSTAY_CUTOFF: ${OVERSTAY_CUTOFF:-20:00}
+      RETENTION_DAYS: ${RETENTION_DAYS:-1095}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    networks:
+      - vms-app-net
+      - shared-nginx
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+          pids: 200
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      vms-db:
+        condition: service_healthy
+      vms-redis:
+        condition: service_healthy
+
+  vms-web:
+    build:
+      context: ./apps/web
+      args:
+        API_URL: http://vms-api:4000
+    container_name: vms-web
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      API_URL: http://vms-api:4000
+    cap_drop:
+      - ALL
+    networks:
+      - vms-app-net
+      - shared-nginx
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+          pids: 200
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      vms-api:
+        condition: service_healthy
+
+networks:
+  vms-app-net:
+    name: vms-app-net
+  shared-nginx:
+    name: shared-nginx
+    external: true
