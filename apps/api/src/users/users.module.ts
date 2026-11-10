@@ -34,14 +34,14 @@ export class CreateUserDto {
   @IsEnum(Role) role: Role;
   @IsOptional() @IsUUID() departmentId?: string;
   @IsOptional() @IsUUID() guardRoomId?: string;
-  @IsString() @MaxLength(128) password: string;
+  @IsString() @MaxLength(72) password: string; // bcrypt ignores bytes past 72
 }
 
 export class UpdateUserDto {
   @IsOptional() @Transform(trim) @IsString() @MinLength(2) @MaxLength(100) name?: string;
   @IsOptional() @Transform(trim) @Matches(PHONE, { message: 'phone must be 9-15 digits, optional leading +' }) phone?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
-  @IsOptional() @IsString() @MaxLength(128) password?: string;
+  @IsOptional() @IsString() @MaxLength(72) password?: string;
   // Re-assignment of guards between rooms (FR-5); super admin only.
   @IsOptional() @IsUUID() guardRoomId?: string;
 }

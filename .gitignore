@@ -7,3 +7,6 @@ coverage/
 dist-seed/
 *.tsbuildinfo
 next-env.d.ts
+
+# local overrides
+.env.local

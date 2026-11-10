@@ -35,9 +35,9 @@ export class PiiCrypto {
     return Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]).toString('utf8');
   }
 
-  /** "199512345678" -> "1995****5678": shown in list views to non-privileged roles. */
+  /** "199512345678" -> "********5678": last four only; the leading digits of a NIC encode birth year and day. */
   static mask(nic: string): string {
     const n = PiiCrypto.normaliseNic(nic);
-    return n.length <= 5 ? '*'.repeat(n.length) : `${n.slice(0, 4)}${'*'.repeat(n.length - 8 > 0 ? n.length - 8 : 1)}${n.slice(-4)}`;
+    return n.length <= 4 ? '*'.repeat(n.length) : `${'*'.repeat(n.length - 4)}${n.slice(-4)}`;
   }
 }

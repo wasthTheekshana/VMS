@@ -2,6 +2,7 @@ import {
   Body, Controller, Get, HttpCode, Module, Param, ParseUUIDPipe, Patch, Post, Query,
 } from '@nestjs/common';
 import { Global } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { MaxLength, IsOptional, IsString, Matches } from 'class-validator';
 import { CurrentUser, Roles } from '../common/decorators';
 import { AuthUser } from '../common/auth.types';
@@ -71,8 +72,10 @@ export class GuardController {
   @Get('my-exits') myExits(@CurrentUser() u: AuthUser, @Query() q: ExitsQuery) {
     return this.svc.myExits(u, q.date);
   }
-  @Get('lookup') lookup(@Query() q: LookupQuery) {
-    return this.svc.lookup(q.nic);
+  // Returns stored personal details for any NIC, so it is rate-limited well below the global limit (no enumeration) and audited.
+  @Throttle({ default: { limit: 12, ttl: 60_000 } })
+  @Get('lookup') lookup(@CurrentUser() u: AuthUser, @Query() q: LookupQuery) {
+    return this.svc.lookup(u, q.nic);
   }
   @Get('visits/:id') one(@CurrentUser() u: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.svc.getOne(u, id);

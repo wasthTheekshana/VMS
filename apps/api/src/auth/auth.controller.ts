@@ -17,7 +17,8 @@ export class LoginDto {
 
 export class ChangePasswordDto {
   @IsString() @MaxLength(128) currentPassword: string;
-  @IsString() @MaxLength(128) newPassword: string;
+  // bcrypt only reads the first 72 bytes; a longer password would silently be truncated, so it is refused instead
+  @IsString() @MaxLength(72) newPassword: string;
 }
 
 @Controller('auth')

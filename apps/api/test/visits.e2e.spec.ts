@@ -280,6 +280,23 @@ describe('Visits: host portal + guard console (e2e)', () => {
       const none = await http().get('/api/guard/lookup').query({ nic: nic(10) }).set(as('guardA'));
       expect(none.body.found).toBe(false);
     });
+    it('audits lookups with the masked NIC only, never the details returned', async () => {
+      await http().get('/api/guard/lookup').query({ nic: nic(9) }).set(as('guardA')).expect(200);
+      const row = await prisma.auditLog.findFirstOrThrow({ where: { action: 'lookup', entity: 'visitor' }, orderBy: { createdAt: 'desc' } });
+      const text = JSON.stringify(row.afterJson);
+      expect(text).toContain('****');
+      expect(text).not.toContain(nic(9));
+      expect(text).not.toContain('Walk Co');
+    });
+    it('records WHICH shared-record fields a guard overwrote (names only) when a returning visitor is re-verified', async () => {
+      const r = await http().post('/api/guard/walk-ins').set(as('guardA')).send({
+        fullName: 'Walk In', nic: nic(9), phone: '0711112222', company: 'Walk Co', hostDepartmentId: hr, passCategoryId: pass,
+      });
+      expect(r.status).toBe(201);
+      const row = await prisma.auditLog.findFirstOrThrow({ where: { action: 'update', entity: 'visitor' }, orderBy: { createdAt: 'desc' } });
+      expect((row.afterJson as { fields: string[] }).fields).toEqual(['phone']); // company/name unchanged, so not listed
+      expect(JSON.stringify(row.afterJson)).not.toContain('0711112222');
+    });
     it('rejects a host from another department and an invalid department', async () => {
       const itHost = await prisma.user.findUniqueOrThrow({ where: { email: email('hostIT') } });
       const r = await http().post('/api/guard/walk-ins').set(as('guardA')).send({

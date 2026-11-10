@@ -52,6 +52,7 @@ export class VisitsService {
   /** Find or create a visitor by NIC hash. `overwrite` = the caller has verified the ID document in person. */
   private async upsertVisitor(
     tx: Tx, v: { fullName?: string; nic: string; phone?: string; company?: string; address?: string }, overwrite: boolean,
+    changed: string[] = [], // out-param: names of shared-record fields this call overwrote (for the audit trail)
   ) {
     const nicHash = this.crypto.hashNic(v.nic);
     const existing = await tx.visitor.findUnique({ where: { nicHash } });
@@ -68,10 +69,9 @@ export class VisitsService {
     // hosts and guards entered. Their typed details live on the visit itself (see visitorName/Phone/Company).
     if (!overwrite) return existing;
     const data: Prisma.VisitorUpdateInput = {};
-    if (v.phone) data.phone = v.phone;
-    if (v.company) data.company = v.company;
-    if (v.fullName) data.fullName = v.fullName;
-    if (v.address) data.address = v.address;
+    for (const f of ['phone', 'company', 'fullName', 'address'] as const) {
+      if (v[f] && v[f] !== existing[f]) { data[f] = v[f]; changed.push(f); }
+    }
     return Object.keys(data).length ? tx.visitor.update({ where: { id: existing.id }, data }) : existing;
   }
 
@@ -234,13 +234,18 @@ export class VisitsService {
   }
 
   /** FR-16 returning-visitor auto-fill + FR-29 warning. Guard sees stored details because they are verifying the ID in hand. */
-  async lookup(nic: string) {
+  async lookup(actor: AuthUser, nic: string) {
     if (!isValidNic(nic)) throw new BadRequestException('Invalid NIC / licence number');
     const hash = this.crypto.hashNic(nic);
     const [visitor, blacklisted] = await Promise.all([
       this.prisma.visitor.findUnique({ where: { nicHash: hash }, select: { fullName: true, address: true, phone: true, company: true } }),
       this.isBlacklisted(hash),
     ]);
+    // Who looked up which ID is itself sensitive, so it is recorded (masked NIC only, never the details returned).
+    await this.audit.record({
+      userId: actor.id, action: 'lookup', entity: 'visitor',
+      after: { nic: PiiCrypto.mask(nic), found: !!visitor, blacklisted, guardRoomId: actor.guardRoomId },
+    });
     return { found: !!visitor, visitor, blacklisted };
   }
 
@@ -259,9 +264,12 @@ export class VisitsService {
       throw new ForbiddenException('Visitor is blacklisted; administrator approval is required');
     }
 
+    const changed: string[] = [];
+    let visitorId = visit.visitor.id;
     await this.prisma.$transaction(async (tx) => {
       if (blacklisted) await this.overrides.consume(tx, dto.overrideId!, finalHash, actor.guardRoomId!, actor.id);
-      const visitor = await this.upsertVisitor(tx, { ...dto, nic: finalNic, fullName: dto.fullName ?? visit.visitor.fullName }, true);
+      const visitor = await this.upsertVisitor(tx, { ...dto, nic: finalNic, fullName: dto.fullName ?? visit.visitor.fullName }, true, changed);
+      visitorId = visitor.id;
       const { count } = await tx.visit.updateMany({
         where: { id, status: 'expected' }, // atomic: a double tap cannot check in twice
         data: {
@@ -275,6 +283,7 @@ export class VisitsService {
     });
 
     const after = await this.findScoped(actor, id);
+    if (changed.length) await this.audit.record({ userId: actor.id, action: 'update', entity: 'visitor', entityId: visitorId, after: { fields: changed, viaVisit: id } });
     await this.audit.record({
       userId: actor.id, action: 'check_in', entity: 'visit', entityId: id,
       before: { status: visit.status, visitorId: visit.visitor.id }, after: { status: after.status, timeIn: after.timeIn, visitorId: after.visitor.id },
@@ -301,9 +310,10 @@ export class VisitsService {
       throw new ForbiddenException('Visitor is blacklisted; administrator approval is required');
     }
 
+    const changed: string[] = [];
     const visit = await this.prisma.$transaction(async (tx) => {
       if (blacklisted) await this.overrides.consume(tx, dto.overrideId!, walkHash, actor.guardRoomId!, actor.id);
-      const visitor = await this.upsertVisitor(tx, dto, true);
+      const visitor = await this.upsertVisitor(tx, dto, true, changed);
       return this.createVisit(tx, {
         visitorId: visitor.id, hostUserId: dto.hostUserId, departmentId: dto.hostDepartmentId, guardRoomId: actor.guardRoomId!,
         passCategoryId: dto.passCategoryId, purpose: dto.purpose, areaVisited: dto.areaVisited, remarks: dto.remarks,
@@ -311,6 +321,7 @@ export class VisitsService {
         visitorName: visitor.fullName, visitorPhone: visitor.phone, visitorCompany: visitor.company,
       });
     });
+    if (changed.length) await this.audit.record({ userId: actor.id, action: 'update', entity: 'visitor', entityId: visit.visitor.id, after: { fields: changed, viaVisit: visit.id } });
     await this.audit.record({ userId: actor.id, action: 'walk_in', entity: 'visit', entityId: visit.id, after: this.auditable(visit) });
     await this.notifier.visitEvent('walk_in', visit.id);
     return this.view(visit, true);

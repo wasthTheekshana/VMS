@@ -29,9 +29,10 @@ describe('PiiCrypto', () => {
     expect(c.hashNic('123456789V')).not.toBe(c.hashNic('123456780V'));
   });
 
-  it('masks all but first/last four characters', () => {
-    expect(PiiCrypto.mask('199512345678')).toBe('1995****5678');
-    expect(PiiCrypto.mask('123456789V')).toBe('1234**789V');
+  it('masks all but the last four characters', () => {
+    expect(PiiCrypto.mask('199512345678')).toBe('********5678');
+    expect(PiiCrypto.mask('123456789V')).toBe('******789V');
+    expect(PiiCrypto.mask('1234')).toBe('****');
   });
 
   it('refuses a short key', () => {
