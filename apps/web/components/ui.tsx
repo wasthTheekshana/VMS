@@ -191,6 +191,21 @@ export function Shell<T extends string>({ me, title, nav, active, onNav, tools, 
     return () => { s.close(); };
   }, [me, toast]);
 
+  // Phones render tables as stacked cards: copy each column heading onto its cells (CSS shows it via attr()).
+  useEffect(() => {
+    const label = () => document.querySelectorAll('table').forEach((t) => {
+      const heads = Array.from(t.querySelectorAll('thead th')).map((h) => (h.textContent ?? '').replace(/[▲▼]/g, '').trim());
+      t.querySelectorAll('tbody tr').forEach((tr) => Array.from(tr.children).forEach((td, i) => {
+        const want = heads[i] ?? '';
+        if (td.getAttribute('data-label') !== want) td.setAttribute('data-label', want);
+      }));
+    });
+    label();
+    const mo = new MutationObserver(label);
+    mo.observe(document.body, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, []);
+
   const live = useMemo(() => ({ connected, on }), [connected, on]);
   const logout = async () => { await api('/auth/logout', { method: 'POST' }).catch(() => undefined); window.location.replace('/'); };
   const current = nav.find((n) => n.id === active)?.label ?? title;

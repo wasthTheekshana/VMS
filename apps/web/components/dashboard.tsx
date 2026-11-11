@@ -64,7 +64,8 @@ function AreaChart({ values, labels }: { values: number[]; labels: string[] }) {
   }).join(' ');
   const base = y(0);
   const area = `${line} L${pts.at(-1)![0]},${base} L${pts[0][0]},${base} Z`;
-  const step = Math.max(1, Math.ceil(labels.length / 8));
+  const narrow = typeof window !== 'undefined' && window.innerWidth < 700;
+  const step = Math.max(1, Math.ceil(labels.length / (narrow ? 4 : 8)));
   const ticks = [0, 1, 2, 3, 4].map((i) => (max / 4) * i);
   return (
     <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Visitor trend">
@@ -136,12 +137,12 @@ export function Dashboard({ rooms, onViewAll }: { rooms: { id: string; name: str
 
   return (
     <>
-      <div className="row spread" style={{ marginBottom: 18 }}>
-        <div className="row">
+      <div className="row spread dash-toolbar" style={{ marginBottom: 18 }}>
+        <div className="row filters">
           <select className="pill" value={room} onChange={(e) => setRoom(e.target.value)} aria-label="Location"><option value="">All locations</option>{rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select>
           <select className="pill" value={view} onChange={(e) => setView(e.target.value as View)} aria-label="Period">{VIEWS.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}</select>
         </div>
-        <div className="row"><a className="btn" href={exp('xlsx')}><Icon name="download" />Excel</a><a className="btn" href={exp('pdf')}><Icon name="download" />PDF</a></div>
+        <div className="row exports"><a className="btn" href={exp('xlsx')}><Icon name="download" />Excel</a><a className="btn" href={exp('pdf')}><Icon name="download" />PDF</a></div>
       </div>
       <ErrorBox error={error} />
       {data && (

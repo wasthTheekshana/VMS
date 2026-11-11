@@ -46,7 +46,7 @@ function Records() {
           <Field label="Company"><input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} /></Field>
           <Field label="NIC, name or reference"><input value={draft.q} onChange={(e) => setDraft({ ...draft, q: e.target.value })} /></Field>
         </div>
-        <div className="row spread">
+        <div className="row spread filter-actions">
           <div className="row"><button className="btn primary">Search</button><button type="button" className="btn" onClick={() => { setDraft(empty); setApplied(empty); setPage(1); }}>Clear</button></div>
           <div className="row"><a className="btn" href={exp('xlsx')}>⬇ Excel</a><a className="btn" href={exp('pdf')}>⬇ PDF</a></div>
         </div>
@@ -67,7 +67,7 @@ function Records() {
           </table>
         </div>
         {data && data.items.length === 0 && <Empty>No records match these filters.</Empty>}
-        <div className="row spread" style={{ marginTop: 10 }}>
+        <div className="row spread pager" style={{ marginTop: 10 }}>
           <span className="muted">{loading ? 'Loading…' : `${data?.total ?? 0} records`}</span>
           <div className="row"><button className="btn small" disabled={page <= 1} onClick={() => setPage(page - 1)}>‹ Prev</button><span>Page {page} / {pages}</span><button className="btn small" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next ›</button></div>
         </div>
@@ -238,7 +238,7 @@ function Blacklist({ onPending }: { onPending: (n: number) => void }) {
         <form className="grid" onSubmit={async (e) => { e.preventDefault(); try { await api('/blacklist', { method: 'POST', body: f }); setF({ nic: '', reason: '' }); void list.reload(); } catch (x) { toast(errText(x), 'error'); } }}>
           <Field label="NIC / licence no."><input value={f.nic} onChange={(e) => setF({ ...f, nic: e.target.value })} required /></Field>
           <Field label="Reason"><input value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} required minLength={3} /></Field>
-          <div style={{ alignSelf: 'end', marginBottom: 12 }}><button className="btn primary">Add to watch list</button></div>
+          <div className="form-action"><button className="btn primary">Add to watch list</button></div>
         </form>
         <ErrorBox error={list.error} />
         <div className="table-wrap"><table><thead><tr><th>NIC (masked)</th><th>Reason</th><th>Added</th><th /></tr></thead><tbody>{list.data?.map((b) => (
@@ -284,7 +284,7 @@ function Audit() {
         <Field label="Action"><input value={f.action} onChange={(e) => setF({ ...f, action: e.target.value })} placeholder="check_in, create…" /></Field>
         <Field label="From"><input type="date" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} /></Field>
         <Field label="To"><input type="date" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} /></Field>
-        <div style={{ alignSelf: 'end', marginBottom: 12 }}><button className="btn primary">Filter</button></div>
+        <div className="form-action"><button className="btn primary">Filter</button></div>
       </form>
       <ErrorBox error={error} />
       <div className="table-wrap"><table>
@@ -292,7 +292,7 @@ function Audit() {
         <tbody>{data?.items.map((a) => (
           <tr key={a.id}><td>{fmt(a.createdAt)}</td><td>{a.userName ?? '–'}</td><td>{a.action}</td><td>{a.entity}</td>
             <td className="muted" style={{ maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.afterJson ? JSON.stringify(a.afterJson).slice(0, 160) : ''}</td></tr>))}</tbody></table></div>
-      <div className="row spread" style={{ marginTop: 10 }}><span className="muted">{data?.total ?? 0} entries</span>
+      <div className="row spread pager" style={{ marginTop: 10 }}><span className="muted">{data?.total ?? 0} entries</span>
         <div className="row"><button className="btn small" disabled={page <= 1} onClick={() => setPage(page - 1)}>‹ Prev</button><span>Page {page} / {pages}</span><button className="btn small" disabled={page >= pages} onClick={() => setPage(page + 1)}>Next ›</button></div></div>
     </div>
   );
