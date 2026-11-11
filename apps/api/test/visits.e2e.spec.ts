@@ -326,23 +326,66 @@ describe('Visits: host portal + guard console (e2e)', () => {
       expect((await http().post(`/api/guard/visits/${w.body.id}/check-out`).set(as(guard)).send({})).status).toBe(200);
       return w.body.id as string;
     };
-    it('shows each guard only the exits they recorded, even within the same guard room', async () => {
-      const a = await walkAndOut('guardA', 10);
-      const a2 = await walkAndOut('guardA2', 11);
-      const mineA = await http().get('/api/guard/my-exits').set(as('guardA'));
-      expect(mineA.status).toBe(200);
-      const idsA = mineA.body.exits.map((e: { id: string }) => e.id);
-      expect(idsA).toContain(a);
-      expect(idsA).not.toContain(a2);
-      expect(mineA.body.total).toBe(idsA.length);
-      const mineA2 = await http().get('/api/guard/my-exits').set(as('guardA2'));
-      expect(mineA2.body.exits.map((e: { id: string }) => e.id)).toEqual([a2]);
-      expect(mineA2.body.exits[0].timeOut).toBeTruthy();
+    it('shows the whole guard room (arrivals, exits, still inside) to every guard of that room, and nothing from another room', async () => {
+      const a = await walkAndOut('guardA', 30);
+      const a2 = await walkAndOut('guardA2', 31);
+      const other = await walkAndOut('guardB', 32);
+      const w = await http().post('/api/guard/walk-ins').set(as('guardA')).send({ fullName: 'Still Inside', nic: nic(33), hostDepartmentId: hr, passCategoryId: pass });
+      expect(w.status).toBe(201);
+
+      const logA = await http().get('/api/guard/room-log').set(as('guardA'));
+      expect(logA.status).toBe(200);
+      const idsA = logA.body.visits.map((v: { id: string }) => v.id);
+      expect(idsA).toEqual(expect.arrayContaining([a, a2, w.body.id])); // both guards' exits plus the one still inside
+      expect(idsA).not.toContain(other); // other guard room stays invisible (FR-17)
+      expect(logA.body.arrivals).toBeGreaterThanOrEqual(3);
+      expect(logA.body.departures).toBeGreaterThanOrEqual(2);
+      expect(logA.body.stillInside).toBeGreaterThanOrEqual(1);
+
+      const inside = logA.body.visits.find((v: { id: string }) => v.id === w.body.id);
+      expect(inside.timeIn).toBeTruthy();
+      expect(inside.timeOut).toBeNull();
+      expect(inside.durationMinutes).toBeNull();
+      const out = logA.body.visits.find((v: { id: string }) => v.id === a);
+      expect(out.timeOut).toBeTruthy();
+      expect(typeof out.durationMinutes).toBe('number');
+      expect(out.visitor.nic).toMatch(/\*/); // lists stay masked
+      expect(out.visitor.nic).not.toBe(nic(30));
+
+      // the second guard of the same room sees the same entries; the other room sees only its own
+      const logA2 = await http().get('/api/guard/room-log').set(as('guardA2'));
+      expect(logA2.body.visits.map((v: { id: string }) => v.id)).toEqual(expect.arrayContaining([a, a2]));
+      const logB = await http().get('/api/guard/room-log').set(as('guardB'));
+      const idsB = logB.body.visits.map((v: { id: string }) => v.id);
+      expect(idsB).toContain(other);
+      expect(idsB).not.toContain(a);
     });
-    it('is guard-only and validates the date', async () => {
-      expect((await http().get('/api/guard/my-exits').set(as('hostHR'))).status).toBe(403);
-      expect((await http().get('/api/guard/my-exits?date=nope').set(as('guardA'))).status).toBe(400);
-      expect((await http().get('/api/guard/my-exits?date=2020-01-01').set(as('guardA'))).body.total).toBe(0);
+    it('with no dates shows the room history; a from/to range narrows it by Colombo day', async () => {
+      const id = await walkAndOut('guardA', 34);
+      const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+      const all = await http().get('/api/guard/room-log').set(as('guardA'));
+      expect(all.body.from).toBeNull();
+      expect(all.body.visits.map((v: { id: string }) => v.id)).toContain(id);
+
+      const todayOnly = await http().get('/api/guard/room-log').query({ from: today, to: today }).set(as('guardA'));
+      expect(todayOnly.body.visits.map((v: { id: string }) => v.id)).toContain(id);
+      expect(todayOnly.body.arrivals).toBeGreaterThanOrEqual(1);
+
+      const past = await http().get('/api/guard/room-log').query({ from: '2020-01-01', to: '2020-01-31' }).set(as('guardA'));
+      expect(past.body.visits).toEqual([]);
+      expect(past.body.arrivals).toBe(0);
+      expect(past.body.departures).toBe(0);
+
+      const fromOnly = await http().get('/api/guard/room-log').query({ from: today }).set(as('guardA'));
+      expect(fromOnly.body.visits.map((v: { id: string }) => v.id)).toContain(id);
+      const toOnly = await http().get('/api/guard/room-log').query({ to: '2020-01-31' }).set(as('guardA'));
+      expect(toOnly.body.visits).toEqual([]);
+    });
+    it('is guard-only and validates the dates', async () => {
+      expect((await http().get('/api/guard/room-log').set(as('hostHR'))).status).toBe(403);
+      expect((await http().get('/api/guard/room-log?from=nope').set(as('guardA'))).status).toBe(400);
+      expect((await http().get('/api/guard/room-log?from=2026-13-40').set(as('guardA'))).status).toBe(400);
+      expect((await http().get('/api/guard/room-log?from=2026-05-02&to=2026-05-01').set(as('guardA'))).status).toBe(400);
     });
   });
 

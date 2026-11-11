@@ -14,8 +14,9 @@ import { CheckInDto, CheckOutDto, PreRegisterDto, UpdatePreRegistrationDto, Walk
 class SearchQuery {
   @IsOptional() @IsString() @MaxLength(100) q?: string;
 }
-class ExitsQuery {
-  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date must be YYYY-MM-DD' }) date?: string;
+class LogQuery {
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from must be YYYY-MM-DD' }) from?: string;
+  @IsOptional() @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to must be YYYY-MM-DD' }) to?: string;
 }
 class LookupQuery {
   @IsString() @MaxLength(30) nic: string;
@@ -69,8 +70,8 @@ export class GuardController {
   @Get('on-premises') onPremises(@CurrentUser() u: AuthUser, @Query() q: SearchQuery) {
     return this.svc.onPremises(u, q.q);
   }
-  @Get('my-exits') myExits(@CurrentUser() u: AuthUser, @Query() q: ExitsQuery) {
-    return this.svc.myExits(u, q.date);
+  @Get('room-log') roomLog(@CurrentUser() u: AuthUser, @Query() q: LogQuery) {
+    return this.svc.roomLog(u, q.from, q.to);
   }
   // Returns stored personal details for any NIC, so it is rate-limited well below the global limit (no enumeration) and audited.
   @Throttle({ default: { limit: 12, ttl: 60_000 } })

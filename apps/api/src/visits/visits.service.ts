@@ -24,6 +24,7 @@ export const INCLUDE = {
 } satisfies Prisma.VisitInclude;
 
 const LIST_LIMIT = 200;
+const LOG_LIMIT = 500; // gate log rows returned at once; the summary counts still cover everything that matches
 type Tx = Prisma.TransactionClient;
 
 @Injectable()
@@ -215,21 +216,33 @@ export class VisitsService {
     return rows.map((v) => this.view(v));
   }
 
-  /** The signed-in guard's own check-outs for one Colombo day (default today). Never includes other guards' exits. */
-  async myExits(actor: AuthUser, date?: string) {
-    const { start, end } = colomboDayBounds(date ? new Date(`${date}T12:00:00+05:30`) : new Date());
-    const rows = await this.prisma.visit.findMany({
-      where: { checkedOutBy: actor.id, timeOut: { gte: start, lt: end } },
-      include: INCLUDE, orderBy: { timeOut: 'desc' }, take: LIST_LIMIT,
-    });
-    const mins = rows.map((v) => (v.timeIn ? Math.round((v.timeOut!.getTime() - v.timeIn.getTime()) / 60_000) : 0));
+  /**
+   * Gate log: everyone who came in or went out through THIS guard room (all history, or a from/to Colombo date range),
+   * whichever guard handled them. Scoped by visitScope, so another room's visitors never appear. Lists stay masked like every list.
+   */
+  async roomLog(actor: AuthUser, from?: string, to?: string) {
+    for (const d of [from, to]) if (d && Number.isNaN(Date.parse(`${d}T12:00:00+05:30`))) throw new BadRequestException('Not a real calendar date');
+    if (from && to && from > to) throw new BadRequestException('"from" must not be after "to"');
+    const dayStart = (d: string) => colomboDayBounds(new Date(`${d}T12:00:00+05:30`)).start;
+    const dayEnd = (d: string) => colomboDayBounds(new Date(`${d}T12:00:00+05:30`)).end;
+    // No dates = the room's whole history (newest first); one or both dates narrow it by Colombo calendar day.
+    const range = from || to ? { ...(from && { gte: dayStart(from) }), ...(to && { lt: dayEnd(to) }) } : undefined;
+    const base: Prisma.VisitWhereInput = { AND: [visitScope(actor), { timeIn: { not: null } }] };
+    const inRange: Prisma.VisitWhereInput = range ? { OR: [{ timeIn: range }, { timeOut: range }] } : {};
+    const [rows, arrivals, departures, stillInside] = await Promise.all([
+      this.prisma.visit.findMany({ where: { AND: [base, inRange] }, include: INCLUDE, orderBy: { timeIn: 'desc' }, take: LOG_LIMIT + 1 }),
+      this.prisma.visit.count({ where: { AND: [base, range ? { timeIn: range } : {}] } }),
+      this.prisma.visit.count({ where: { AND: [base, range ? { timeOut: range } : { timeOut: { not: null } }] } }),
+      this.prisma.visit.count({ where: { AND: [base, inRange, { status: 'on_premises' }] } }),
+    ]);
+    const truncated = rows.length > LOG_LIMIT;
+    const shown = rows.slice(0, LOG_LIMIT);
+    const stay = (v: (typeof rows)[number]) => (v.timeIn && v.timeOut ? Math.round((v.timeOut.getTime() - v.timeIn.getTime()) / 60_000) : null);
+    const finished = shown.filter((v) => stay(v) !== null);
     return {
-      date: start.toISOString(),
-      total: rows.length,
-      avgMinutes: rows.length ? Math.round(mins.reduce((a, b) => a + b, 0) / rows.length) : 0,
-      firstExit: rows.length ? rows[rows.length - 1].timeOut : null,
-      lastExit: rows.length ? rows[0].timeOut : null,
-      exits: rows.map((v, i) => ({ ...this.view(v), durationMinutes: mins[i] })),
+      from: from ?? null, to: to ?? null, truncated, arrivals, departures, stillInside,
+      avgMinutes: finished.length ? Math.round(finished.reduce((a, v) => a + stay(v)!, 0) / finished.length) : 0,
+      visits: shown.map((v) => ({ ...this.view(v), durationMinutes: stay(v) })),
     };
   }
 

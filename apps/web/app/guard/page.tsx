@@ -232,7 +232,7 @@ export default function GuardConsole() {
       { id: 'expected', label: 'Expected today', icon: 'clipboard', badge: expected.data?.length },
       { id: 'premises', label: 'On premises', icon: 'users', badge: premises.data?.length },
       { id: 'walkin', label: 'Walk-in', icon: 'userPlus' },
-      { id: 'exits', label: 'My check-outs', icon: 'logout' },
+      { id: 'exits', label: 'Gate log', icon: 'logout' },
     ]}>
       {(tab === 'expected' || tab === 'premises') && (
         <div className="searchbar">
@@ -276,7 +276,7 @@ export default function GuardConsole() {
           </div>
         </>
       )}
-      {tab === 'exits' && <MyExits />}
+      {tab === 'exits' && <GateLog />}
       {tab === 'walkin' && <WalkIn passes={passes ?? []} onDone={done} />}
 
       {checkIn && <CheckInModal visit={checkIn} passes={passes ?? []} onClose={() => setCheckIn(null)} onDone={done} />}
@@ -308,38 +308,55 @@ function CheckOutModal({ visit, onClose, onDone }: { visit: Visit; onClose: () =
   );
 }
 
-interface ExitSummary {
-  date: string; total: number; avgMinutes: number; firstExit: string | null; lastExit: string | null;
-  exits: (Visit & { durationMinutes: number })[];
+interface GateLogData {
+  from: string | null; to: string | null; truncated: boolean; arrivals: number; departures: number; stillInside: number; avgMinutes: number;
+  visits: (Visit & { durationMinutes: number | null })[];
 }
 const colomboToday = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
 
-/** The signed-in guard's own exits for a day: who they checked out and when. Other guards' exits never appear. */
-function MyExits() {
-  const [date, setDate] = useState(colomboToday());
-  const { data, error, reload } = useFetch<ExitSummary>('/guard/my-exits', { date });
+/** Everything that came in or went out through this guard room, whichever guard handled it. Other rooms never appear.
+ *  Opens with the room's whole history; picking From and/or To narrows it by date. */
+function GateLog() {
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const { data, error, reload } = useFetch<GateLogData>('/guard/room-log', { from, to });
   useLive('visits:changed', () => void reload());
+  const filtered = !!(from || to);
   return (
     <>
       <div className="searchbar">
-        <label className="muted" htmlFor="exit-date">Date</label>
-        <input id="exit-date" type="date" value={date} max={colomboToday()} onChange={(e) => e.target.value && setDate(e.target.value)} />
+        <label className="muted" htmlFor="log-from">From</label>
+        <input id="log-from" type="date" value={from} max={to || colomboToday()} onChange={(e) => setFrom(e.target.value)} />
+        <label className="muted" htmlFor="log-to">To</label>
+        <input id="log-to" type="date" value={to} min={from || undefined} max={colomboToday()} onChange={(e) => setTo(e.target.value)} />
+        {filtered && <button className="btn" onClick={() => { setFrom(''); setTo(''); }}>Show all</button>}
         <button className="btn primary" onClick={() => void reload()}>Refresh</button>
       </div>
       <ErrorBox error={error} />
       {data && (
         <>
           <div className="kpis">
-            <div className="kpi"><div><small>Checked out by me</small><b>{data.total}</b></div></div>
+            <div className="kpi"><div><small>Came in</small><b>{data.arrivals}</b></div></div>
+            <div className="kpi"><div><small>Went out</small><b>{data.departures}</b></div></div>
+            <div className="kpi"><div><small>Still inside</small><b>{data.stillInside}</b></div></div>
             <div className="kpi"><div><small>Average stay</small><b>{data.avgMinutes} min</b></div></div>
-            <div className="kpi"><div><small>First exit</small><b>{data.firstExit ? fmtTime(data.firstExit) : '–'}</b></div></div>
-            <div className="kpi"><div><small>Last exit</small><b>{data.lastExit ? fmtTime(data.lastExit) : '–'}</b></div></div>
           </div>
-          {data.exits.length === 0 ? <Empty>You have not checked anyone out on this day.</Empty> : (
+          {data.truncated && <p className="muted">Showing the latest {data.visits.length} records. Pick a From / To date to narrow the list.</p>}
+          {data.visits.length === 0 ? <Empty>{filtered ? 'Nobody came in or went out through this gate on those dates.' : 'No visitors have come through this gate yet.'}</Empty> : (
             <div className="panel"><div className="table-wrap"><table>
-              <thead><tr><th>Time out</th><th>Visitor</th><th>Company</th><th>Time in</th><th>Stay</th><th>Ref</th></tr></thead>
-              <tbody>{data.exits.map((v) => (
-                <tr key={v.id}><td>{fmtTime(v.timeOut)}</td><td>{v.visitor.fullName}</td><td>{v.visitor.company ?? '–'}</td><td>{fmtTime(v.timeIn)}</td><td>{v.durationMinutes} min</td><td>{v.referenceNo}</td></tr>
+              <thead><tr><th>In</th><th>Out</th><th>Visitor</th><th>NIC</th><th>Company</th><th>Host</th><th>Pass · Area</th><th>Stay</th><th>Ref</th></tr></thead>
+              <tbody>{data.visits.map((v) => (
+                <tr key={v.id}>
+                  <td>{fmtTime(v.timeIn)}</td>
+                  <td>{v.timeOut ? fmtTime(v.timeOut) : <Badge s="on_premises" />}</td>
+                  <td>{v.visitor.fullName}</td>
+                  <td>{v.visitor.nic}</td>
+                  <td>{v.visitor.company ?? '–'}</td>
+                  <td>{v.host?.name ?? v.department?.name ?? '–'}</td>
+                  <td>{[v.passCategory?.name, v.areaVisited].filter(Boolean).join(' · ') || '–'}</td>
+                  <td>{v.durationMinutes === null ? '–' : `${v.durationMinutes} min`}</td>
+                  <td>{v.referenceNo}</td>
+                </tr>
               ))}</tbody></table></div></div>
           )}
         </>
