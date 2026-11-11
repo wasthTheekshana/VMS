@@ -68,7 +68,9 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
       const joins = roomsFor(u);
       socket.data = { userId: u.id, exp: claims.exp, tv: claims.tv, at: claims.at, rooms: joins.join(',') };
       await socket.join(joins);
-    } catch {
+    } catch (e) {
+      // Reason only (no cookie, token or user data), so an operator can tell a missing cookie from an expired session.
+      this.log.warn(`Socket refused: ${e instanceof Error ? e.message : 'unknown error'}`);
       socket.disconnect(true); // unauthenticated sockets get nothing
     }
   }
