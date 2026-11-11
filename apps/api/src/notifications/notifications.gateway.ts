@@ -47,6 +47,8 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
   private readonly log = new Logger('Realtime');
   private readonly maxHours = loadEnv().sessionMaxHours;
   private sweeper?: NodeJS.Timeout;
+  /** userId -> latest refreshed cookie expiry (epoch seconds). Entries are dropped once they have passed. */
+  private readonly refreshedUntil = new Map<string, number>();
 
   constructor(private readonly jwt: JwtService, private readonly prisma: PrismaService) {}
 
@@ -75,6 +77,11 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
     }
   }
 
+  /** The user's session cookie was just refreshed and is valid until `exp` (epoch seconds): their open sockets stay alive until then. */
+  sessionRefreshed(userId: string, exp: number) {
+    if (exp > (this.refreshedUntil.get(userId) ?? 0)) this.refreshedUntil.set(userId, exp);
+  }
+
   /** End every live connection of a user at once (logout, password change/reset, deactivation, reassignment). */
   disconnectUser(userId: string) {
     this.server?.in(rooms.user(userId)).disconnectSockets(true);
@@ -88,6 +95,7 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
     const sockets = await this.server.fetchSockets();
     if (!sockets.length) return;
     const nowSec = Date.now() / 1000;
+    for (const [id, exp] of this.refreshedUntil) if (exp < nowSec) this.refreshedUntil.delete(id);
     const ids = [...new Set(sockets.map((s) => s.data.userId as string))];
     const users = new Map(
       (await this.prisma.user.findMany({
@@ -97,11 +105,11 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
     );
     for (const s of sockets) {
       const u = users.get(s.data.userId);
-      // The token's own `exp` is deliberately NOT checked: it is only the idle window of the cookie that was current
-      // when the socket opened, and the page keeps refreshing the cookie while it is open. Revocation and the absolute
-      // session limit (inside isSessionCurrent) are what end a live connection.
+      // Idle expiry follows the session cookie: the socket's own token only covers the window that was current when it
+      // opened, so the latest refresh for this user extends it. No refresh for the whole idle window ends the socket.
+      const idleUntil = Math.max(s.data.exp, this.refreshedUntil.get(s.data.userId) ?? 0);
       const stale =
-        !u || !u.isActive ||
+        !u || !u.isActive || idleUntil < nowSec ||
         !isSessionCurrent({ tv: s.data.tv, at: s.data.at }, u, this.maxHours, nowSec) ||
         roomsFor(u).join(',') !== s.data.rooms;
       if (stale) s.disconnect(true);

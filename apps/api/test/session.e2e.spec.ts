@@ -60,7 +60,7 @@ describe('Session revocation and live connections (e2e)', () => {
     roomA = (await prisma.guardRoom.create({ data: { name: `A-${tag}`, location: 'x' } })).id;
     roomB = (await prisma.guardRoom.create({ data: { name: `B-${tag}`, location: 'x' } })).id;
     await mk('admin', 'super_admin');
-    for (const n of ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'gina', 'hank', 'iris']) await mk(n, 'host', { departmentId: hr });
+    for (const n of ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'gina', 'hank', 'iris', 'jade']) await mk(n, 'host', { departmentId: hr });
     await mk('guardx', 'guard', { guardRoomId: roomA });
   });
 
@@ -156,12 +156,23 @@ describe('Session revocation and live connections (e2e)', () => {
       await sleep(1200);
       expect(s.connected).toBe(false);
     });
-    it("keeps a socket open after its token's idle expiry: the page refreshes the cookie, and only revocation or the absolute limit ends a live connection", async () => {
-      const u = await prisma.user.findUniqueOrThrow({ where: { id: ids.iris } });
-      const token = await jwt.signAsync({ sub: u.id, tv: u.tokenVersion, at: Math.floor(Date.now() / 1000) }, { expiresIn: '2s' });
-      const s = await connect(`vms_session=${token}`);
-      await sleep(2600); // the token the socket was opened with is now past its exp
-      await (app.get(NotificationsGateway) as unknown as { sweep(): Promise<void> }).sweep();
+    const shortLived = async (userId: string) => {
+      const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+      return `vms_session=${await jwt.signAsync({ sub: u.id, tv: u.tokenVersion, at: Math.floor(Date.now() / 1000) }, { expiresIn: '2s' })}`;
+    };
+    const sweep = () => (app.get(NotificationsGateway) as unknown as { sweep(): Promise<void> }).sweep();
+    it('ends a socket whose idle window passed with no cookie refresh', async () => {
+      const s = await connect(await shortLived(ids.jade));
+      await sleep(2600); // the token the socket opened with is now past its exp, and nothing refreshed it
+      await sweep();
+      await waitFor(() => !s.connected);
+    });
+    it("keeps a socket open past its opening token's expiry when the user's session was refreshed since", async () => {
+      const s = await connect(await shortLived(ids.iris));
+      const refreshed = await http().post('/api/auth/refresh').set('Cookie', await login('iris')).expect(204);
+      expect(cookieOf(refreshed)).toBeTruthy();
+      await sleep(2600);
+      await sweep();
       await sleep(400);
       expect(s.connected).toBe(true);
     });

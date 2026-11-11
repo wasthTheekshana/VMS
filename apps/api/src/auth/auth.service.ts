@@ -57,7 +57,11 @@ export class AuthService {
   async refresh(token?: string) {
     const s = await this.verify(token);
     if (!s) throw new UnauthorizedException();
-    return this.issue(s.user.id, s.user.tokenVersion, s.claims.at);
+    const fresh = await this.issue(s.user.id, s.user.tokenVersion, s.claims.at);
+    // An open page refreshes its cookie every few minutes; tell the live channel so its sockets share that idle window.
+    const exp = (this.jwt.decode(fresh) as { exp?: number } | null)?.exp;
+    if (exp) this.gateway.sessionRefreshed(s.user.id, exp);
+    return fresh;
   }
 
   /** Logout ends the session for real: the token version is bumped, so a copied cookie stops working too. */
