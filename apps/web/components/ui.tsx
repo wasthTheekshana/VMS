@@ -180,15 +180,27 @@ export function Shell<T extends string>({ me, title, nav, active, onNav, tools, 
     const s = io(process.env.NEXT_PUBLIC_WS_URL ?? window.location.origin, { path: '/ws', withCredentials: true, transports: ['websocket'] });
     socket.current = s;
     const fire = (event: string, p?: unknown) => handlers.current.get(event)?.forEach((f) => f(p));
-    s.on('connect', () => { setConnected(true); fire('connect'); }); // re-fetch after any reconnect: nothing is missed
-    s.on('disconnect', () => setConnected(false));
+    let delay = 2000;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    s.on('connect', () => { delay = 2000; setConnected(true); fire('connect'); }); // re-fetch after any reconnect: nothing is missed
+    s.on('disconnect', (reason) => {
+      setConnected(false);
+      // socket.io never reconnects by itself after a deliberate close from the server. Confirm the session is still
+      // valid, then reconnect with a growing pause. A signed-out session fails the check, so there is no retry loop.
+      if (reason === 'io server disconnect') {
+        api('/auth/me').then(() => {
+          retry = setTimeout(() => s.connect(), delay);
+          delay = Math.min(delay * 2, 30_000);
+        }).catch(() => undefined);
+      }
+    });
     s.on('connect_error', () => setConnected(false));
     for (const ev of ['notification', 'visits:changed', 'overrides:changed']) s.on(ev, (p) => fire(ev, p));
     s.on('notification', (n: { title: string; message: string; sound: boolean }) => {
       toast(`${n.title}: ${n.message}`, 'alert');
       if (n.sound) beep();
     });
-    return () => { s.close(); };
+    return () => { clearTimeout(retry); s.close(); };
   }, [me, toast]);
 
   // Phones render tables as stacked cards: copy each column heading onto its cells (CSS shows it via attr()).

@@ -97,8 +97,11 @@ export class NotificationsGateway implements OnGatewayConnection, OnModuleInit, 
     );
     for (const s of sockets) {
       const u = users.get(s.data.userId);
+      // The token's own `exp` is deliberately NOT checked: it is only the idle window of the cookie that was current
+      // when the socket opened, and the page keeps refreshing the cookie while it is open. Revocation and the absolute
+      // session limit (inside isSessionCurrent) are what end a live connection.
       const stale =
-        !u || !u.isActive || s.data.exp < nowSec ||
+        !u || !u.isActive ||
         !isSessionCurrent({ tv: s.data.tv, at: s.data.at }, u, this.maxHours, nowSec) ||
         roomsFor(u).join(',') !== s.data.rooms;
       if (stale) s.disconnect(true);

@@ -7,6 +7,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { loadEnv } from '../src/config/env';
+import { NotificationsGateway } from '../src/notifications/notifications.gateway';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 const PW = 'Test-pass-12345';
@@ -59,7 +60,7 @@ describe('Session revocation and live connections (e2e)', () => {
     roomA = (await prisma.guardRoom.create({ data: { name: `A-${tag}`, location: 'x' } })).id;
     roomB = (await prisma.guardRoom.create({ data: { name: `B-${tag}`, location: 'x' } })).id;
     await mk('admin', 'super_admin');
-    for (const n of ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'gina', 'hank']) await mk(n, 'host', { departmentId: hr });
+    for (const n of ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'gina', 'hank', 'iris']) await mk(n, 'host', { departmentId: hr });
     await mk('guardx', 'guard', { guardRoomId: roomA });
   });
 
@@ -154,6 +155,15 @@ describe('Session revocation and live connections (e2e)', () => {
       sockets.push(s);
       await sleep(1200);
       expect(s.connected).toBe(false);
+    });
+    it("keeps a socket open after its token's idle expiry: the page refreshes the cookie, and only revocation or the absolute limit ends a live connection", async () => {
+      const u = await prisma.user.findUniqueOrThrow({ where: { id: ids.iris } });
+      const token = await jwt.signAsync({ sub: u.id, tv: u.tokenVersion, at: Math.floor(Date.now() / 1000) }, { expiresIn: '2s' });
+      const s = await connect(`vms_session=${token}`);
+      await sleep(2600); // the token the socket was opened with is now past its exp
+      await (app.get(NotificationsGateway) as unknown as { sweep(): Promise<void> }).sweep();
+      await sleep(400);
+      expect(s.connected).toBe(true);
     });
     it('moving a guard to another guard room drops their socket, so old-room alerts stop', async () => {
       const guard = await login('guardx');
