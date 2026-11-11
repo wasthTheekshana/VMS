@@ -38,7 +38,7 @@ export default function Login() {
             <li><Icon name="chart" />Live dashboards and exportable reports</li>
           </ul>
         </div>
-        <small style={{ opacity: .8 }}>DOK Solutions Lanka (Pvt) Ltd · A member of the ABANS Group</small>
+        <small style={{ opacity: .8 }}>Cognivra Labs</small>
       </section>
       <section className="login-form">
         <form onSubmit={submit}>
